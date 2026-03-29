@@ -1,95 +1,113 @@
-"""
-自动剪辑视频工具（项目初始化版本）
+"""自动剪辑视频工具（MoviePy 2.x 版本）。
 
-这是一个给 Python 初学者的脚手架示例：
-1. 读取本地视频
-2. 根据脚本切割视频
-3. 导出结果视频
-
-你可以先运行：python main.py
+功能：
+1) 读取 input/script.json
+2) 按脚本中定义的多个片段进行裁剪
+3) 将片段按顺序拼接并导出到 output/final.mp4
 """
 
+import json
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List, Tuple
 
-from moviepy.editor import VideoFileClip
+from moviepy import VideoFileClip, concatenate_videoclips
 
 
-def load_local_video(video_path: str) -> VideoFileClip:
-    """读取本地视频并返回 moviepy 视频对象。"""
-    path = Path(video_path)
-    if not path.exists():
+def load_local_video(video_path: Path) -> VideoFileClip:
+    """读取本地视频并返回 VideoFileClip。"""
+    if not video_path.exists():
         raise FileNotFoundError(f"未找到视频文件: {video_path}")
-
-    # 用 moviepy 打开视频文件
-    return VideoFileClip(str(path))
+    return VideoFileClip(str(video_path))
 
 
-def parse_cut_script() -> List[Dict]:
-    """定义切割脚本。当前需求：固定取前 5 秒。"""
-    return [
-        {"start": 0, "end": 5, "note": "前 5 秒"},
-    ]
+def load_script_json(script_path: Path) -> List[Dict]:
+    """读取并解析 script.json。"""
+    if not script_path.exists():
+        raise FileNotFoundError(f"未找到脚本文件: {script_path}")
+
+    with script_path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    if not isinstance(data, list):
+        raise ValueError("script.json 必须是列表，例如: [{...}, {...}]")
+    if not data:
+        raise ValueError("script.json 不能为空，至少需要一个片段配置。")
+
+    return data
 
 
-def cut_video_by_script(video_obj: VideoFileClip, segments: List[Dict]) -> VideoFileClip:
-    """按脚本切割视频。
+def cut_video_by_script(script_items: List[Dict], input_dir: Path) -> Tuple[VideoFileClip, List[VideoFileClip]]:
+    """根据脚本切片并拼接。
 
-    当前实现会读取第一个片段，并返回该片段的子视频。
+    返回：
+    - final_clip: 最终拼接后的视频片段
+    - source_clips: 打开的源视频对象列表（用于主流程统一 close）
     """
-    if not segments:
-        raise ValueError("segments 不能为空，至少需要一个切割片段。")
+    source_clips: List[VideoFileClip] = []
+    segment_clips: List[VideoFileClip] = []
 
-    first_segment = segments[0]
-    start = float(first_segment.get("start", 0))
-    end = float(first_segment.get("end", 5))
+    for idx, item in enumerate(script_items, start=1):
+        filename = item.get("file") or item.get("filename")
+        if not filename:
+            raise ValueError(f"第 {idx} 个片段缺少 file/filename 字段。")
 
-    if start < 0:
-        start = 0
+        if "start" not in item or "end" not in item:
+            raise ValueError(f"第 {idx} 个片段必须包含 start 和 end 字段。")
 
-    # 防止 end 超过原视频时长
-    end = min(end, float(video_obj.duration))
-    if end <= start:
-        raise ValueError(f"切割区间无效: start={start}, end={end}")
+        start = float(item["start"])
+        end = float(item["end"])
+        if start < 0:
+            start = 0.0
 
-    # moviepy 的 subclip 会返回一个新的视频片段对象
-    return video_obj.subclip(start, end)
+        source_path = input_dir / filename
+        source_clip = load_local_video(source_path)
+        source_clips.append(source_clip)
+
+        end = min(end, float(source_clip.duration))
+        if end <= start:
+            raise ValueError(f"第 {idx} 个片段时间区间无效: start={start}, end={end}")
+
+        # MoviePy 2.x 推荐用 subclipped()
+        segment_clip = source_clip.subclipped(start, end)
+        segment_clips.append(segment_clip)
+
+    if not segment_clips:
+        raise ValueError("没有可拼接的片段。")
+
+    # 兼容不同分辨率/帧率素材，使用 compose 更稳妥
+    final_clip = concatenate_videoclips(segment_clips, method="compose")
+    return final_clip, source_clips
 
 
-def export_result(final_clip: VideoFileClip, output_path: str = "output/final.mp4"):
-    """导出结果视频。"""
-    out_path = Path(output_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
+def export_result(final_clip: VideoFileClip, output_path: Path) -> None:
+    """导出最终视频。"""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     final_clip.write_videofile(
-        str(out_path),
+        str(output_path),
         codec="libx264",
         audio_codec="aac",
     )
 
 
-def main():
-    """主流程：把 input/sample.mp4 的前 5 秒导出到 output/final.mp4。"""
-    input_video = "input/sample.mp4"
+def main() -> None:
+    """主流程入口。"""
+    input_dir = Path("input")
+    script_path = input_dir / "script.json"
+    output_path = Path("output/final.mp4")
+
+    source_clips: List[VideoFileClip] = []
+    final_clip: VideoFileClip | None = None
 
     try:
-        video_obj = load_local_video(input_video)
-    except FileNotFoundError as e:
-        print(e)
-        print("提示：请先把测试视频放到 input/sample.mp4，再运行。")
-        return
-
-    segments = parse_cut_script()
-
-    try:
-        final_clip = cut_video_by_script(video_obj, segments)
-        export_result(final_clip, "output/final.mp4")
-        print("已完成剪辑：output/final.mp4")
+        script_items = load_script_json(script_path)
+        final_clip, source_clips = cut_video_by_script(script_items, input_dir)
+        export_result(final_clip, output_path)
+        print(f"已完成剪辑：{output_path}")
     finally:
-        # 释放资源，避免文件句柄占用
-        if 'final_clip' in locals():
+        if final_clip is not None:
             final_clip.close()
-        video_obj.close()
+        for clip in source_clips:
+            clip.close()
 
 
 if __name__ == "__main__":
