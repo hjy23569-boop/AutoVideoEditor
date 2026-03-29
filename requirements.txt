@@ -1,0 +1,12 @@
+# 视频处理核心库（使用 2.x 语法，如 subclipped）
+moviepy>=2.0,<3.0
+
+# 数值处理（moviepy 常依赖）
+numpy>=1.23
+
+# 音视频读写后端（moviepy 常用依赖）
+imageio>=2.34
+imageio-ffmpeg>=0.5
+
+# 可选：进度条显示
+proglog>=0.1.10
